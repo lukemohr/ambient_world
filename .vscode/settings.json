@@ -1,0 +1,24 @@
+{
+  // Use Rust Analyzer instead of the old RLS
+  "rust-analyzer.checkOnSave": true,
+  "rust-analyzer.check.command": "clippy",
+  // Show inline type hints
+  "rust-analyzer.inlayHints.typeHints.enable": true,
+  "rust-analyzer.inlayHints.chainingHints.enable": true,
+  "rust-analyzer.inlayHints.parameterHints.enable": true,
+  // Format on save using rustfmt
+  "editor.formatOnSave": true,
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  // Linting improvements
+  "rust-analyzer.diagnostics.enable": true,
+  "rust-analyzer.cargo.buildScripts.enable": true,
+  // Make problem messages less noisy
+  "rust-analyzer.diagnostics.disabled": [
+    "unresolved-proc-macro"
+  ],
+  "editor.rulers": [
+    100
+  ]
+}

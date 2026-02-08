@@ -1,6 +1,6 @@
-use crate::core::engine::WorldEngine;
-use crate::core::events::Event;
-use crate::core::world::WorldSnapshot;
+use ambient_core::engine::WorldEngine;
+use ambient_core::events::Event;
+use ambient_core::world::WorldSnapshot;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant, interval};
 use tracing::info;
@@ -39,16 +39,21 @@ pub async fn start_world_task(
 /// Starts the tick sender task that periodically sends Tick events.
 ///
 /// This task:
-/// - Runs on a fixed interval.
+/// - Runs at the specified frequency (Hz).
 /// - Computes the time delta (dt) since the last tick.
 /// - Sends Event::Tick to the event channel.
 /// - Keeps running separately to avoid blocking the world task.
 pub async fn start_tick_task(
     event_tx: mpsc::Sender<Event>,
+    hz: f64,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut interval = interval(Duration::from_millis(100)); // Adjust interval as needed
+    let interval_secs = 1.0 / hz;
+    let mut interval = interval(Duration::from_secs_f64(interval_secs));
     let mut last_time = Instant::now();
-    info!("Tick task started");
+    info!(
+        "Tick task started with frequency {:.2} Hz (interval {:.3}s)",
+        hz, interval_secs
+    );
 
     loop {
         interval.tick().await;
@@ -57,11 +62,41 @@ pub async fn start_tick_task(
         last_time = now;
 
         let event = Event::Tick { dt };
-        if let Err(_) = event_tx.send(event).await {
+        if event_tx.send(event).await.is_err() {
             info!("Event channel closed, stopping tick task");
             break;
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn test_tick_task_sends_events() {
+        let (event_tx, mut event_rx) = mpsc::channel(10);
+        let hz = 10.0; // 10 Hz for faster testing
+        let handle = tokio::spawn(start_tick_task(event_tx, hz));
+
+        // Wait for a few ticks
+        let mut count = 0;
+        while count < 3 {
+            match timeout(Duration::from_millis(200), event_rx.recv()).await {
+                Ok(Some(Event::Tick { dt })) => {
+                    assert!(dt > 0.0 && dt < 0.2); // dt should be around 0.1s
+                    count += 1;
+                }
+                _ => break,
+            }
+        }
+
+        // Forcibly stop the task to avoid hanging
+        handle.abort();
+        let _ = handle.await;
+        assert_eq!(count, 3);
+    }
 }

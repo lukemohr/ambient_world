@@ -2,7 +2,8 @@
 
 use rand::{Rng, seq::IndexedRandom};
 
-const DECAY_FACTOR: f64 = 1.;
+const DRIFT_FACTOR: f64 = 0.2;
+const DECAY_FACTOR: f64 = 0.1;
 
 /// Defines the current world state.
 ///
@@ -16,6 +17,7 @@ pub struct WorldState {
 }
 
 /// World state to share outwardly at a point in time.
+#[derive(Clone, serde::Serialize)]
 pub struct WorldSnapshot {
     density: f64,
     rhythm: f64,
@@ -47,7 +49,7 @@ impl WorldState {
         let drift_dir = [-1., 1.];
         let mut compute_drift = |current: f64| {
             let dir = drift_dir.choose(rng).copied().unwrap_or(0.);
-            (current + df * dir).clamp(0., 1.)
+            (current + DRIFT_FACTOR * df * dir).clamp(0., 1.)
         };
         let compute_decay = |current: f64| {
             let decay: f64 = DECAY_FACTOR * df * (current - 0.5) / 0.5;

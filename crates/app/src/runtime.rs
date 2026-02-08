@@ -1,6 +1,8 @@
 use ambient_core::engine::WorldEngine;
 use ambient_core::events::Event;
 use ambient_core::world::WorldSnapshot;
+use audio::params::{AudioParams, SharedAudioParams};
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant, interval};
 use tracing::info;
@@ -66,6 +68,45 @@ pub async fn start_tick_task(
             info!("Event channel closed, stopping tick task");
             break;
         }
+    }
+
+    Ok(())
+}
+
+/// Starts the audio control task that maps world state to audio parameters.
+///
+/// This task:
+/// - Subscribes to world state snapshots.
+/// - Computes audio parameters from the latest snapshot.
+/// - Updates the shared audio parameters for real-time control.
+/// - Runs continuously, updating whenever the world state changes.
+pub async fn start_audio_control_task(
+    mut state_rx: watch::Receiver<WorldSnapshot>,
+    shared_audio_params: Arc<SharedAudioParams>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("Audio control task started");
+
+    loop {
+        // Wait for a new snapshot
+        if state_rx.changed().await.is_err() {
+            info!("State channel closed, stopping audio control task");
+            break;
+        }
+
+        // Get the latest snapshot
+        let snapshot = state_rx.borrow();
+
+        // Compute audio params from world state
+        let audio_params = AudioParams::from_world_state(
+            snapshot.density() as f32,
+            snapshot.rhythm() as f32,
+            snapshot.tension() as f32,
+            snapshot.energy() as f32,
+            snapshot.warmth() as f32,
+        );
+
+        // Update shared audio params (atomic, non-blocking)
+        shared_audio_params.set(audio_params);
     }
 
     Ok(())

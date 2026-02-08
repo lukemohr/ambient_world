@@ -1,8 +1,10 @@
 mod api;
 mod runtime;
 
-use crate::runtime::{start_tick_task, start_world_task};
+use crate::runtime::{start_audio_control_task, start_tick_task, start_world_task};
 use ambient_core::world::{WorldSnapshot, WorldState};
+use audio::engine::AudioEngine;
+use audio::params::{AudioParams, SharedAudioParams};
 use axum::serve;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -58,7 +60,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Create channels
     let (event_tx, event_rx) = mpsc::channel(100);
     let initial_state = WorldState::new();
-    let (state_tx, state_rx) = watch::channel(WorldSnapshot::from_world_state(&initial_state));
+    let initial_snapshot = WorldSnapshot::from_world_state(&initial_state);
+    let (state_tx, state_rx) = watch::channel(initial_snapshot.clone());
+
+    // Create initial audio params from initial world snapshot
+    let initial_audio_params = AudioParams::from_world_state(
+        initial_snapshot.density() as f32,
+        initial_snapshot.rhythm() as f32,
+        initial_snapshot.tension() as f32,
+        initial_snapshot.energy() as f32,
+        initial_snapshot.warmth() as f32,
+    );
+    let shared_audio_params = Arc::new(SharedAudioParams::new(initial_audio_params));
+
+    // Start audio engine early
+    let audio_params_clone = Arc::clone(&shared_audio_params);
+    let _audio_engine = AudioEngine::start(audio_params_clone)?;
+    info!("Audio engine started");
 
     // Default tick rate
     let tick_hz = config.tick_hz;
@@ -67,6 +85,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Spawn tasks
     tokio::spawn(start_world_task(event_rx, state_tx));
     tokio::spawn(start_tick_task(event_tx.clone(), tick_hz));
+
+    // Start audio control task
+    let state_rx_for_audio = state_rx.clone();
+    let audio_params_for_control = Arc::clone(&shared_audio_params);
+    tokio::spawn(start_audio_control_task(
+        state_rx_for_audio,
+        audio_params_for_control,
+    ));
 
     // State logger task: log snapshot every 1 second
     let state_rx_clone = state_rx.clone();

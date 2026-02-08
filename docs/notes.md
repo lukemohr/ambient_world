@@ -4,6 +4,32 @@
 
 This is a real-time ambient audio synthesis system built in Rust that generates evolving drone sounds based on a simulated world state. The system uses modern async Rust patterns, real-time audio processing, and reactive programming to create an immersive audio experience.
 
+## Recent Improvements
+
+### Audio Engine Enhancements
+
+- **Multi-format support**: Automatic detection and conversion for F32, I16, U16 sample formats
+- **Lock-free architecture**: Removed Mutex from audio callback for zero-latency parameter updates
+- **CPU optimizations**: Phase-in-radians approach eliminates per-sample divisions and multiplications
+- **Level management**: Proper gain staging with soft limiting prevents clipping
+
+### API Modernization
+
+- **Type-safe event schema**: Replaced stringly-typed parsing with serde enum derives
+- **Async-friendly locking**: RwLock with snapshot task for non-blocking API responses
+- **Self-documenting JSON**: Compile-time guaranteed API schema for frontend integration
+
+### Performance Optimizations
+
+- **Real-time safety**: No allocations or blocking operations in audio hot paths
+- **Efficient phase management**: Pre-calculated phase increments avoid expensive computations
+- **Memory safety**: RAII and ownership system prevent resource leaks
+
+### Future Planning
+
+- **Deterministic mode**: RNG injection architecture for reproducible demos/replay
+- **WebSocket streaming**: Real-time state updates for reactive frontends
+
 ## Architecture
 
 The project is organized as a Cargo workspace with three main crates:
@@ -77,13 +103,12 @@ ambient-world/
 
 #### Audio Engine (`engine.rs`)
 
-Manages CPAL (Cross-Platform Audio Library) streams:
+Manages CPAL (Cross-Platform Audio Library) streams with multi-format support:
 
 ```rust
 pub struct AudioEngine {
     _stream: Stream,        // Keeps stream alive
     config: StreamConfig,   // Audio configuration
-    layer: Arc<Mutex<DroneLayer>>, // Synthesis layer
 }
 ```
 
@@ -100,9 +125,51 @@ CPAL is Rust's primary cross-platform audio I/O library. Key concepts:
 1. Get default host: `cpal::default_host()`
 2. Find output device: `host.default_output_device()`
 3. Query supported configs: `device.supported_output_configs()`
-4. Select optimal config (f32 format, max sample rate)
+4. Select optimal config (f32 format preferred, max sample rate)
 5. Build output stream with callback function
 6. Start playback: `stream.play()`
+
+**Multi-Format Support**:
+The engine automatically detects and supports multiple sample formats:
+
+- **F32**: Native floating-point (-1.0 to 1.0)
+- **I16**: 16-bit signed integer (-32768 to 32767)
+- **U16**: 16-bit unsigned integer (0 to 65535)
+
+Each format has dedicated processing functions that convert from f32 internally.
+
+**Lock-Free Architecture**:
+Audio layers are owned by the callback closure, eliminating Mutex contention:
+
+```rust
+let mut layers = vec![drone_layer, texture_layer, sparkle_layer];
+
+// Callback owns layers directly - no locking needed
+move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+    Self::process_audio_f32(data, &mut layers, &shared_params, config.channels);
+}
+```
+
+**Level Management**:
+Proper gain staging prevents clipping:
+
+```rust
+// Conservative per-layer gains
+const DRONE_LAYER_GAIN: f32 = 0.3;
+const TEXTURE_LAYER_GAIN: f32 = 0.4;
+const SPARKLE_LAYER_GAIN: f32 = 0.6;
+
+// Master gain with soft limiting
+let master_gain = params.master_gain.min(1.0);
+mixed_sample *= master_gain;
+
+// Soft limiter: 6dB limiting with smooth knee
+if mixed_sample.abs() > 0.8 {
+    let excess = mixed_sample.abs() - 0.8;
+    let compressed = excess * 0.5; // 2:1 ratio
+    mixed_sample = mixed_sample.signum() * (0.8 + compressed);
+}
+```
 
 #### Audio Layers (`layers.rs`)
 
@@ -114,7 +181,48 @@ pub trait Layer {
 }
 ```
 
-**DroneLayer**: Dual-oscillator synthesis with tension-based detuning.
+**DroneLayer**: Dual-oscillator synthesis with tension-based detuning and CPU optimizations.
+
+**Performance Optimizations**:
+The DroneLayer uses phase-in-radians for maximum efficiency:
+
+```rust
+pub struct DroneLayer {
+    phase_a: f32,           // Phase in radians (not sample count)
+    phase_b: f32,           // Phase in radians (not sample count)
+    phase_incr_a: f32,      // Pre-calculated: 2π * freq_a / sample_rate
+    phase_incr_b: f32,      // Pre-calculated: 2π * freq_b / sample_rate
+    // ... smoothed parameters
+}
+
+// Optimized processing: direct sin() of phase in radians
+fn process(&mut self, params: &AudioParams) -> f32 {
+    // Update phase increments (avoid per-sample divisions)
+    self.phase_incr_a = self.smoothed_base_freq_hz * TWO_PI / self.sample_rate;
+    self.phase_incr_b = self.smoothed_base_freq_hz * self.smoothed_detune_ratio * TWO_PI / self.sample_rate;
+
+    // Generate samples (no multiplication in sin() argument)
+    let sample_a = self.phase_a.sin();
+    let sample_b = self.phase_b.sin();
+
+    // Update phases (increment by pre-calculated radians)
+    self.phase_a += self.phase_incr_a;
+    self.phase_b += self.phase_incr_b;
+
+    // Wrap at 2π (prevents precision loss)
+    if self.phase_a >= TWO_PI { self.phase_a -= TWO_PI; }
+    if self.phase_b >= TWO_PI { self.phase_b -= TWO_PI; }
+
+    (sample_a + sample_b) * 0.5
+}
+```
+
+**Key Optimizations**:
+
+- **Phase-in-radians**: Increment by `2π × f / sr` instead of sample counting
+- **Pre-calculated increments**: Avoid per-sample frequency calculations
+- **Direct sin() calls**: No complex argument computation per sample
+- **Efficient wrapping**: Wrap at 2π instead of division-based wrapping
 
 **TextureLayer**: Provides a subtle noise bed with slow LFO modulation and filtering.
 
@@ -299,18 +407,78 @@ Orchestrates the entire system:
 
 #### HTTP API (`api.rs`)
 
-REST endpoints using Axum framework:
+REST endpoints using Axum framework with type-safe event schema:
 
 - `GET /health` - System status
 - `GET /state` - Current world snapshot
 - `POST /event` - Trigger world events
+
+**Type-Safe Event Schema**:
+Replaced stringly-typed parsing with proper Rust enums and serde derives:
+
+```rust
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum EventRequest {
+    #[serde(rename = "trigger")]
+    Trigger {
+        kind: TriggerKind,  // Proper enum, not string
+        #[serde(default = "default_intensity")]
+        intensity: f64,
+    },
+    #[serde(rename = "perform")]
+    Perform(PerformAction),  // Proper enum, not string
+}
+
+// Handler uses direct enum matching (no string parsing)
+async fn event(
+    State(app_state): State<AppState>,
+    Json(req): Json<EventRequest>,
+) -> impl IntoResponse {
+    let event = match req {
+        EventRequest::Trigger { kind, intensity } => Event::Trigger { kind, intensity },
+        EventRequest::Perform(action) => Event::Perform(action),
+    };
+    // ... send event
+}
+```
+
+**Benefits**:
+
+- **Compile-time safety**: No typos in event types/kinds
+- **Self-documenting**: JSON schema generated from code
+- **Frontend integration**: TypeScript types can be derived
+- **Better errors**: Serde provides clear validation messages
+
+**Async Architecture**:
+Uses RwLock with snapshot task for non-blocking API responses:
+
+```rust
+// Snapshot task keeps current state updated
+pub async fn start_snapshot_task(
+    mut state_rx: watch::Receiver<WorldSnapshot>,
+    current_snapshot: Arc<RwLock<WorldSnapshot>>,
+) {
+    loop {
+        if state_rx.changed().await.is_err() { break; }
+        let snapshot = state_rx.borrow().clone();
+        *current_snapshot.write().await = snapshot;
+    }
+}
+
+// API handlers read without blocking
+async fn get_state(State(app_state): State<AppState>) -> impl IntoResponse {
+    let snapshot = app_state.current_snapshot.read().await.clone();
+    Json(snapshot)
+}
+```
 
 **Axum Routing**:
 
 ```rust
 pub fn create_router(
     event_tx: mpsc::Sender<Event>,
-    state_rx: watch::Receiver<WorldSnapshot>
+    current_snapshot: Arc<RwLock<WorldSnapshot>>,
 ) -> Router
 ```
 
@@ -505,18 +673,45 @@ CPAL Buffer       f32 samples        System audio
 - **Atomic parameters**: Lock-free updates
 - **No allocation**: In audio callback hot path
 - **Smoothing**: Prevent parameter discontinuities
+- **Multi-format support**: Automatic format detection and conversion
+- **Lock-free layers**: Callback owns layers directly (no Mutex)
+
+### CPU Optimizations
+
+**DroneLayer Efficiency**:
+
+- **Phase-in-radians**: Increment by `2π × f / sr` (prevents per-sample multiplications)
+- **Pre-calculated increments**: Avoid division in hot path
+- **Direct sin() calls**: No complex argument computation
+- **Efficient wrapping**: Wrap at 2π instead of `sample_rate / freq`
+
+**Before (inefficient)**:
+
+```rust
+// Per-sample: sin(phase * freq * 2π / sample_rate)
+// Per-sample: phase += 1.0; if phase >= sample_rate / freq { ... }
+```
+
+**After (optimized)**:
+
+```rust
+// Pre-calculate: phase_incr = freq * 2π / sample_rate
+// Per-sample: sin(phase); phase += phase_incr; if phase >= 2π { ... }
+```
 
 ### Async Efficiency
 
 - **Task spawning**: Independent concurrency
 - **Channel selection**: Appropriate semantics (mpsc vs watch)
 - **Watch channels**: Skip intermediate values for latest-only
+- **RwLock snapshots**: Non-blocking reads for API responses
 
 ### Memory Safety
 
 - **RAII**: Automatic resource management
 - **Ownership system**: Compile-time guarantees
-- **Arc/Mutex**: Thread-safe sharing where needed
+- **Arc/RwLock**: Thread-safe sharing where needed
+- **No allocations**: In real-time audio paths
 
 ## Development Workflow
 
@@ -551,10 +746,36 @@ curl http://localhost:3000/health
 # Get current state
 curl http://localhost:3000/state
 
-# Trigger events
+# Trigger events (type-safe enum-based JSON)
 curl -X POST http://localhost:3000/event \
   -H "Content-Type: application/json" \
-  -d '{"kind": "Pulse", "intensity": 0.5}'
+  -d '{"type": "trigger", "kind": "Pulse", "intensity": 0.8}'
+
+curl -X POST http://localhost:3000/event \
+  -H "Content-Type: application/json" \
+  -d '{"type": "perform", "Scene": {"name": "sunrise"}}'
+
+curl -X POST http://localhost:3000/event \
+  -H "Content-Type: application/json" \
+  -d '{"type": "perform", "Freeze": {"seconds": 5.0}}'
+```
+
+**JSON Schema Examples**:
+
+**Trigger Events**:
+
+```json
+{"type": "trigger", "kind": "Pulse", "intensity": 0.8}
+{"type": "trigger", "kind": "Calm", "intensity": 0.3}
+{"type": "trigger", "kind": "Heat"}
+```
+
+**Perform Actions**:
+
+```json
+{"type": "perform", "Pulse": {"intensity": 0.9}}
+{"type": "perform", "Scene": {"name": "sunrise"}}
+{"type": "perform", "Freeze": {"seconds": 5.0}}
 ```
 
 ## Future Extensions
@@ -572,6 +793,7 @@ curl -X POST http://localhost:3000/event \
 - **Complex events**: Chained reactions
 - **External inputs**: Sensors, network data
 - **Persistence**: Save/load world states
+- **Deterministic mode**: Seeded RNG for demos/replay (planned)
 
 ### API Features
 
@@ -579,5 +801,6 @@ curl -X POST http://localhost:3000/event \
 - **Batch operations**: Multiple events
 - **Configuration**: Runtime parameter adjustment
 - **Metrics**: Performance monitoring
+- **Type safety**: Enum-based schema prevents UI bugs
 
 This architecture provides a solid foundation for real-time, reactive audio applications with clean separation of concerns and modern Rust patterns.

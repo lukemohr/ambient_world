@@ -48,6 +48,8 @@ impl WorldState {
     }
 
     /// Introduces a random drift to the world state parameters.
+    /// TODO: This already takes RNG as parameter - good for deterministic mode.
+    /// TODO: Future: Add WorldState::new_deterministic(seed) for testing.
     pub fn drift(&mut self, df: f64, rng: &mut impl Rng) {
         let drift_dir = [-1., 1.];
         let mut compute_drift = |current: f64| {

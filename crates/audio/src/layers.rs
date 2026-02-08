@@ -1,14 +1,16 @@
 use crate::params::AudioParams;
 
 /// Trait for audio layers that generate samples.
-pub trait Layer {
+pub trait Layer: Send {
     fn process(&mut self, params: &AudioParams) -> f32;
 }
 
 /// Drone layer that generates a continuous tone with two oscillators for richness.
 pub struct DroneLayer {
-    phase_a: f32,
-    phase_b: f32,
+    phase_a: f32,      // Phase in radians for oscillator A
+    phase_b: f32,      // Phase in radians for oscillator B
+    phase_incr_a: f32, // Phase increment per sample for oscillator A (2π * freq / sample_rate)
+    phase_incr_b: f32, // Phase increment per sample for oscillator B (2π * freq / sample_rate)
     smoothed_master_gain: f32,
     smoothed_base_freq_hz: f32,
     smoothed_detune_ratio: f32,
@@ -21,11 +23,15 @@ pub struct DroneLayer {
 
 impl DroneLayer {
     pub fn new(sample_rate: f32) -> Self {
+        let base_freq = 440.0;
+        let two_pi = 2.0 * std::f32::consts::PI;
         Self {
             phase_a: 0.0,
             phase_b: 0.0,
+            phase_incr_a: base_freq * two_pi / sample_rate,
+            phase_incr_b: base_freq * two_pi / sample_rate, // Will be updated with detune
             smoothed_master_gain: 0.0,
-            smoothed_base_freq_hz: 440.0,
+            smoothed_base_freq_hz: base_freq,
             smoothed_detune_ratio: 1.0,
             smoothed_brightness: 0.0,
             smoothed_motion: 0.0,
@@ -74,22 +80,29 @@ impl Layer for DroneLayer {
             self.smoothing_coeff,
         );
 
-        // Generate samples from two oscillators
-        let freq_a = self.smoothed_base_freq_hz;
-        let freq_b = self.smoothed_base_freq_hz * self.smoothed_detune_ratio;
+        // Update phase increments based on smoothed frequencies
+        let two_pi = 2.0 * std::f32::consts::PI;
+        self.phase_incr_a = self.smoothed_base_freq_hz * two_pi / self.sample_rate;
+        self.phase_incr_b =
+            self.smoothed_base_freq_hz * self.smoothed_detune_ratio * two_pi / self.sample_rate;
 
-        let sample_a =
-            (self.phase_a * freq_a * 2.0 * std::f32::consts::PI / self.sample_rate).sin();
-        let sample_b =
-            (self.phase_b * freq_b * 2.0 * std::f32::consts::PI / self.sample_rate).sin();
+        // Generate samples from two oscillators (direct sin of phase in radians)
+        let sample_a = self.phase_a.sin();
+        let sample_b = self.phase_b.sin();
 
         // Mix the two oscillators (equal volume)
         let mixed_sample = (sample_a + sample_b) * 0.5;
 
-        // Update phases
-        self.phase_a += 1.0;
-        if self.phase_a >= self.sample_rate / freq_a {
-            self.phase_a -= self.sample_rate / freq_a;
+        // Update phases (increment by pre-calculated radians per sample)
+        self.phase_a += self.phase_incr_a;
+        self.phase_b += self.phase_incr_b;
+
+        // Wrap phases at 2π to prevent floating point precision issues
+        if self.phase_a >= two_pi {
+            self.phase_a -= two_pi;
+        }
+        if self.phase_b >= two_pi {
+            self.phase_b -= two_pi;
         }
 
         mixed_sample

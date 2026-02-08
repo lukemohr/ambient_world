@@ -3,6 +3,8 @@ use crate::world::{WorldSnapshot, WorldState};
 
 /// The engine that updates the world state over time.
 /// TODO: Consider adding drift parameter here
+/// TODO: For deterministic mode/testing: inject RNG instead of using rand::rng()
+/// TODO: Add WorldEngine::new_with_rng(rng) and WorldEngine::new_deterministic(seed) constructors
 pub struct WorldEngine {
     state: WorldState,
     sparkle_phase: f64,
@@ -16,6 +18,7 @@ impl Default for WorldEngine {
 
 impl WorldEngine {
     /// Initializes the world engine with a default state.
+    /// TODO: Add new_with_rng(rng) and new_deterministic(seed) for testing/replay
     pub fn new() -> Self {
         Self {
             state: WorldState::new(),
@@ -27,6 +30,7 @@ impl WorldEngine {
     pub fn apply(&mut self, event: Event) {
         match event {
             Event::Tick { dt } => {
+                // TODO: For deterministic mode: use injected RNG instead of rand::rng()
                 self.state.drift(dt, &mut rand::rng());
                 self.update_sparkles(dt);
             }
@@ -108,6 +112,7 @@ impl WorldEngine {
         let sparkle_probability = base_probability * density_factor * dt;
 
         if rand::random::<f64>() < sparkle_probability {
+            // TODO: For deterministic mode: use injected RNG instead of rand::random()
             // Generate a sparkle impulse
             // Strength based on current energy level
             let strength = 0.5 + self.state.energy() * 0.5; // 0.5 to 1.0

@@ -10,11 +10,11 @@ use crate::layers::TextureLayer;
 use crate::params::SharedAudioParams;
 
 /// Audio engine that manages CPAL stream.
+/// Layers are owned by the callback closure to avoid locking.
 #[allow(unused)]
 pub struct AudioEngine {
     _stream: Stream, // Keep stream alive
     config: StreamConfig,
-    layers: Vec<Arc<std::sync::Mutex<dyn Layer + Send>>>,
 }
 
 impl AudioEngine {
@@ -24,53 +24,80 @@ impl AudioEngine {
             .default_output_device()
             .ok_or_else(|| anyhow::anyhow!("No default output device"))?;
 
-        // Select a config with f32 sample format
-        let supported_config = device
-            .supported_output_configs()?
-            .find(|config| config.sample_format() == SampleFormat::F32)
-            .ok_or_else(|| anyhow::anyhow!("No f32 output config found"))?;
+        // Get the default output config (whatever format it supports)
+        let mut supported_configs = device.supported_output_configs()?;
+        let supported_config = supported_configs
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No supported output configs found"))?;
+        let sample_format = supported_config.sample_format();
         let config = supported_config.with_max_sample_rate().config();
 
         let sample_rate_hz = config.sample_rate as u32;
 
         info!(
-            "Selected device: {}, config: {} Hz, {} channels",
+            "Selected device: {}, config: {} Hz, {} channels, format: {:?}",
             device.description()?,
             sample_rate_hz,
-            config.channels
+            config.channels,
+            sample_format
         );
 
         let sample_rate = sample_rate_hz as f32;
-        let drone_layer: Arc<std::sync::Mutex<dyn Layer + Send>> =
-            Arc::new(std::sync::Mutex::new(DroneLayer::new(sample_rate)));
-        let sparkle_layer: Arc<std::sync::Mutex<dyn Layer + Send>> =
-            Arc::new(std::sync::Mutex::new(SparkleLayer::new(sample_rate)));
-        let texture_layer: Arc<std::sync::Mutex<dyn Layer + Send>> =
-            Arc::new(std::sync::Mutex::new(TextureLayer::new(sample_rate)));
-        let layers = vec![drone_layer, texture_layer, sparkle_layer];
-        let layers_clone: Vec<_> = layers.iter().map(Arc::clone).collect();
 
-        let stream = device.build_output_stream(
-            &config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                Self::process_audio(data, &layers_clone, &shared_params, config.channels);
-            },
-            |err| eprintln!("Stream error: {}", err),
-            None,
-        )?;
+        // Create layers directly (no Mutex needed since callback owns them)
+        let drone_layer = Box::new(DroneLayer::new(sample_rate)) as Box<dyn Layer>;
+        let sparkle_layer = Box::new(SparkleLayer::new(sample_rate)) as Box<dyn Layer>;
+        let texture_layer = Box::new(TextureLayer::new(sample_rate)) as Box<dyn Layer>;
+        let mut layers = vec![drone_layer, texture_layer, sparkle_layer];
+
+        // Build stream based on sample format
+        let stream = match sample_format {
+            SampleFormat::F32 => {
+                device.build_output_stream(
+                    &config,
+                    move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                        Self::process_audio_f32(data, &mut layers, &shared_params, config.channels);
+                    },
+                    |err| eprintln!("Stream error: {}", err),
+                    None,
+                )?
+            }
+            SampleFormat::I16 => {
+                device.build_output_stream(
+                    &config,
+                    move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+                        Self::process_audio_i16(data, &mut layers, &shared_params, config.channels);
+                    },
+                    |err| eprintln!("Stream error: {}", err),
+                    None,
+                )?
+            }
+            SampleFormat::U16 => {
+                device.build_output_stream(
+                    &config,
+                    move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+                        Self::process_audio_u16(data, &mut layers, &shared_params, config.channels);
+                    },
+                    |err| eprintln!("Stream error: {}", err),
+                    None,
+                )?
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unsupported sample format: {:?}", sample_format));
+            }
+        };
 
         stream.play()?;
 
         Ok(Self {
             _stream: stream,
             config,
-            layers,
         })
     }
 
-    fn process_audio(
+    fn process_audio_f32(
         output: &mut [f32],
-        layers: &[Arc<std::sync::Mutex<dyn Layer + Send>>],
+        layers: &mut [Box<dyn Layer>],
         shared_params: &Arc<SharedAudioParams>,
         channels: u16,
     ) {
@@ -89,8 +116,7 @@ impl AudioEngine {
             let mut mixed_sample = 0.0;
 
             // Process each layer with its specific gain
-            for (i, layer) in layers.iter().enumerate() {
-                let mut layer = layer.lock().unwrap();
+            for (i, layer) in layers.iter_mut().enumerate() {
                 let layer_sample = layer.process(&params);
 
                 // Ensure layer output is finite
@@ -127,6 +153,39 @@ impl AudioEngine {
                     sample_index += 1;
                 }
             }
+        }
+    }
+
+    fn process_audio_i16(
+        output: &mut [i16],
+        layers: &mut [Box<dyn Layer>],
+        shared_params: &Arc<SharedAudioParams>,
+        channels: u16,
+    ) {
+        // Generate f32 samples first
+        let mut f32_buffer = vec![0.0f32; output.len()];
+        Self::process_audio_f32(&mut f32_buffer, layers, shared_params, channels);
+
+        // Convert f32 (-1.0..1.0) to i16 (-32768..32767)
+        for (i, &sample) in f32_buffer.iter().enumerate() {
+            output[i] = (sample * i16::MAX as f32) as i16;
+        }
+    }
+
+    fn process_audio_u16(
+        output: &mut [u16],
+        layers: &mut [Box<dyn Layer>],
+        shared_params: &Arc<SharedAudioParams>,
+        channels: u16,
+    ) {
+        // Generate f32 samples first
+        let mut f32_buffer = vec![0.0f32; output.len()];
+        Self::process_audio_f32(&mut f32_buffer, layers, shared_params, channels);
+
+        // Convert f32 (-1.0..1.0) to u16 (0..65535)
+        for (i, &sample) in f32_buffer.iter().enumerate() {
+            let normalized = (sample + 1.0) * 0.5; // Convert -1..1 to 0..1
+            output[i] = (normalized * u16::MAX as f32) as u16;
         }
     }
 }

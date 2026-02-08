@@ -8,6 +8,7 @@ use crate::layers::Layer;
 use crate::params::SharedAudioParams;
 
 /// Audio engine that manages CPAL stream.
+#[allow(unused)]
 pub struct AudioEngine {
     _stream: Stream, // Keep stream alive
     config: StreamConfig,

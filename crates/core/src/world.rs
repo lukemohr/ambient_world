@@ -43,7 +43,7 @@ impl WorldState {
     }
 
     /// Introduces a random drift to the world state parameters.
-    pub fn drift(&self, df: f64, rng: &mut impl Rng) -> Self {
+    pub fn drift(&mut self, df: f64, rng: &mut impl Rng) {
         let drift_dir = [-1., 1.];
         let mut compute_drift = |current: f64| {
             let dir = drift_dir.choose(rng).copied().unwrap_or(0.);
@@ -55,13 +55,53 @@ impl WorldState {
         };
         let mut apply_transform = |value: f64| compute_decay(compute_drift(value));
 
-        Self {
-            density: apply_transform(self.density),
-            rhythm: apply_transform(self.rhythm),
-            tension: apply_transform(self.tension),
-            energy: apply_transform(self.energy),
-            warmth: apply_transform(self.warmth),
-        }
+        self.set_density(apply_transform(self.density()));
+        self.set_rhythm(apply_transform(self.rhythm()));
+        self.set_tension(apply_transform(self.tension()));
+        self.set_energy(apply_transform(self.energy()));
+        self.set_warmth(apply_transform(self.warmth()));
+    }
+
+    // Getters
+    pub fn density(&self) -> f64 {
+        self.density
+    }
+
+    pub fn rhythm(&self) -> f64 {
+        self.rhythm
+    }
+
+    pub fn tension(&self) -> f64 {
+        self.tension
+    }
+
+    pub fn energy(&self) -> f64 {
+        self.energy
+    }
+
+    pub fn warmth(&self) -> f64 {
+        self.warmth
+    }
+
+    // Setters
+    pub fn set_density(&mut self, value: f64) {
+        self.density = value.clamp(0., 1.);
+    }
+
+    pub fn set_rhythm(&mut self, value: f64) {
+        self.rhythm = value.clamp(0., 1.);
+    }
+
+    pub fn set_tension(&mut self, value: f64) {
+        self.tension = value.clamp(0., 1.);
+    }
+
+    pub fn set_energy(&mut self, value: f64) {
+        self.energy = value.clamp(0., 1.);
+    }
+
+    pub fn set_warmth(&mut self, value: f64) {
+        self.warmth = value.clamp(0., 1.);
     }
 }
 
@@ -69,12 +109,33 @@ impl WorldSnapshot {
     /// Creates a snapshot of the current world state.
     pub fn from_world_state(world_state: &WorldState) -> Self {
         Self {
-            density: world_state.density,
-            rhythm: world_state.rhythm,
-            tension: world_state.tension,
-            energy: world_state.energy,
-            warmth: world_state.warmth,
+            density: world_state.density(),
+            rhythm: world_state.rhythm(),
+            tension: world_state.tension(),
+            energy: world_state.energy(),
+            warmth: world_state.warmth(),
         }
+    }
+
+    // Getters
+    pub fn density(&self) -> f64 {
+        self.density
+    }
+
+    pub fn rhythm(&self) -> f64 {
+        self.rhythm
+    }
+
+    pub fn tension(&self) -> f64 {
+        self.tension
+    }
+
+    pub fn energy(&self) -> f64 {
+        self.energy
+    }
+
+    pub fn warmth(&self) -> f64 {
+        self.warmth
     }
 }
 
@@ -89,12 +150,12 @@ mod tests {
         let mut rng = StdRng::from_seed([0; 32]);
         let mut state = WorldState::new();
         for _ in 0..10000 {
-            state = state.drift(0.05, &mut rng);
+            state.drift(0.05, &mut rng);
         }
-        assert!((0.0..=1.0).contains(&state.density));
-        assert!((0.0..=1.0).contains(&state.rhythm));
-        assert!((0.0..=1.0).contains(&state.tension));
-        assert!((0.0..=1.0).contains(&state.energy));
-        assert!((0.0..=1.0).contains(&state.warmth));
+        assert!((0.0..=1.0).contains(&state.density()));
+        assert!((0.0..=1.0).contains(&state.rhythm()));
+        assert!((0.0..=1.0).contains(&state.tension()));
+        assert!((0.0..=1.0).contains(&state.energy()));
+        assert!((0.0..=1.0).contains(&state.warmth()));
     }
 }

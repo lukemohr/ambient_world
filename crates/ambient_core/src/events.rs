@@ -4,6 +4,7 @@
 pub enum Event {
     Tick { dt: f64 },
     Trigger { kind: TriggerKind, intensity: f64 },
+    Perform(PerformAction),
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -13,6 +14,17 @@ pub enum TriggerKind {
     Calm,
     Heat,
     Tense,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum PerformAction {
+    Pulse { intensity: f64 },
+    Stir { intensity: f64 },
+    Calm { intensity: f64 },
+    Heat { intensity: f64 },
+    Tense { intensity: f64 },
+    Scene { name: String },
+    Freeze { seconds: f64 },
 }
 
 #[cfg(test)]
@@ -37,6 +49,21 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn test_event_perform_serialization() {
+        let event = Event::Perform(PerformAction::Pulse { intensity: 0.7 });
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+
+        let scene_event = Event::Perform(PerformAction::Scene {
+            name: "sunrise".to_string(),
+        });
+        let json = serde_json::to_string(&scene_event).unwrap();
+        let deserialized: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(scene_event, deserialized);
     }
 
     #[test]

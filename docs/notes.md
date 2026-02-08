@@ -33,12 +33,20 @@ ambient-world/
 
 **Key Concepts**:
 
-- **World State**: Five normalized parameters (0.0-1.0):
+- **World State**: Six normalized parameters (0.0-1.0):
   - `density`: Spatial complexity
   - `rhythm`: Temporal patterns
   - `tension`: Emotional intensity
   - `energy`: Overall activity level
   - `warmth`: Tonal character
+  - `sparkle_impulse`: Trigger for sparkle audio events
+
+- **Sparkle System**: Procedural generation of audio sparkle events
+  - **Probabilistic Generation**: Sparkles occur based on world rhythm and density
+  - **Phase Accumulation**: Uses a sparkle_phase accumulator that advances with each world tick
+  - **Threshold Triggering**: When phase exceeds threshold, generates sparkle_impulse
+  - **Audio Response**: SparkleLayer creates short noise bursts with attack/decay envelope
+  - **Smoothing**: Both world generation and audio processing use smoothing to prevent clicks
 
 - **Event System**: Triggers that modify world state:
   - `Tick`: Regular time-based evolution
@@ -108,6 +116,96 @@ pub trait Layer {
 
 **DroneLayer**: Dual-oscillator synthesis with tension-based detuning.
 
+**TextureLayer**: Provides a subtle noise bed with slow LFO modulation and filtering.
+
+**SparkleLayer**: Generates short, bright noise impulses when sparkle_impulse > 0.
+
+**Sparkle Implementation Details**:
+
+The sparkle system creates natural-sounding audio impulses that occur probabilistically based on world state:
+
+**World-Side Generation** (`ambient_core/src/engine.rs`):
+
+```rust
+// In WorldEngine::update_sparkles()
+let threshold = 1.0 - (rhythm * density); // Lower threshold = more sparkles
+self.sparkle_phase += rhythm * 0.1;       // Phase advances with rhythm
+
+if self.sparkle_phase >= threshold {
+    self.sparkle_phase = 0.0;             // Reset phase
+    // Generate sparkle_impulse based on density
+    let impulse = density * (0.5 + rhythm * 0.5);
+    world_state.set_sparkle_impulse(impulse);
+}
+```
+
+**Audio-Side Processing** (`audio/src/layers.rs`):
+
+```rust
+// SparkleLayer envelope: quick attack, slow decay
+fn envelope(&self, phase: f32) -> f32 {
+    if phase < 0.1 {
+        phase * 10.0        // Attack: 0→1 in first 10%
+    } else {
+        (1.0 - (phase - 0.1) / 0.9).max(0.0)  // Decay: 1→0 over 90%
+    }
+}
+
+// White noise generation with smoothing
+let smoothed_impulse = self.smoothed_sparkle_impulse;
+let envelope_value = self.envelope(self.envelope_phase);
+let noise_sample = self.noise(); // LCG-generated white noise
+let sparkle_sample = noise_sample * envelope_value * smoothed_impulse;
+```
+
+**Key Features**:
+
+- **Smoothing**: Prevents clicks by gradually changing sparkle_impulse
+- **Envelope Shaping**: 100ms duration with fast attack/slow decay
+- **Threshold Triggering**: Only triggers when smoothed impulse crosses threshold
+- **Noise Generation**: LCG-based white noise for brightness
+- **Finite Checking**: Guards against NaN/inf values in real-time audio
+
+**Texture Implementation Details**:
+
+The texture layer provides a subtle noise bed that responds to world state parameters:
+
+**Parameter Mapping** (`audio/src/params.rs`):
+
+```rust
+// World state to audio parameters
+texture: (density * 0.3).clamp(0.0, 1.0),         // density -> texture gain
+brightness: (1.0 - warmth * 0.5).clamp(0.0, 1.0), // warmth inverse -> brightness
+detune_ratio: (1.0 + tension * 0.01).clamp(0.5, 2.0), // tension -> detune
+motion: (rhythm * 0.5).clamp(0.0, 1.0),           // energy -> motion (LFO amount)
+```
+
+**Audio Processing** (`audio/src/layers.rs`):
+
+```rust
+// Generate noise with tension-based roughness
+let noise_sample = self.noise(self.smoothed_tension); // LCG + cubic distortion
+
+// Apply warmth-based filtering (low-pass for "darker" sound)
+let warmth_cutoff = 1.0 - self.smoothed_warmth;
+let filtered_sample = self.filter(noise_sample, warmth_cutoff * 0.3);
+
+// Slow LFO modulation (0.01-0.1 Hz triangle wave)
+let lfo_value = self.lfo(self.smoothed_energy);
+let modulated_sample = filtered_sample * (0.3 + 0.7 * lfo_value);
+
+// Apply density-based gain (very loud for testing)
+let texture_sample = modulated_sample * self.smoothed_density * 2.0;
+```
+
+**Key Features**:
+
+- **LFO Modulation**: Very slow triangle wave (0.01-0.1 Hz) for organic movement
+- **Filtering**: Simple low-pass filter controlled by warmth for tonal shaping
+- **Roughness**: Tension adds cubic distortion to noise for harsher texture
+- **Gain Level**: High level (2.0x) for testing audibility
+- **Slow Smoothing**: 0.005 coefficient for gradual parameter changes
+
 #### Parameter System (`params.rs`)
 
 Thread-safe real-time parameter updates using atomics.
@@ -120,7 +218,10 @@ pub struct SharedAudioParams {
     master_gain: AtomicU32,     // f32 stored as bits
     base_freq_hz: AtomicU32,
     detune_ratio: AtomicU32,
-    // ... more fields
+    brightness: AtomicU32,
+    motion: AtomicU32,
+    texture: AtomicU32,
+    sparkle_impulse: AtomicU32,
 }
 ```
 
@@ -138,6 +239,20 @@ self.field.store(value.to_bits(), Ordering::Relaxed)
 
 // Load: convert u32 bits back to f32
 f32::from_bits(self.field.load(Ordering::Relaxed))
+```
+
+**Parameter Mapping** (`AudioParams::from_world_state`):
+
+World state parameters are mapped to audio synthesis parameters:
+
+```rust
+master_gain: (energy * 0.2).clamp(0.0, 1.0),        // energy -> gain
+base_freq_hz: (80.0 + warmth * 160.0).clamp(80.0, 240.0), // warmth -> freq
+detune_ratio: (1.0 + tension * 0.01).clamp(0.5, 2.0),     // tension -> detune
+brightness: (1.0 - warmth * 0.5).clamp(0.0, 1.0),   // warmth inverse
+motion: (rhythm * 0.5).clamp(0.0, 1.0),             // rhythm -> motion
+texture: (density * 0.3).clamp(0.0, 1.0),           // density -> texture
+sparkle_impulse: sparkle_impulse,                   // direct pass-through
 ```
 
 ### 3. `app` - Application Orchestration

@@ -70,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         initial_snapshot.tension() as f32,
         initial_snapshot.energy() as f32,
         initial_snapshot.warmth() as f32,
+        initial_snapshot.sparkle_impulse() as f32,
     );
     let shared_audio_params = Arc::new(SharedAudioParams::new(initial_audio_params));
 

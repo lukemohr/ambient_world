@@ -6,10 +6,10 @@ use ambient_core::world::{WorldSnapshot, WorldState};
 use audio::engine::AudioEngine;
 use audio::params::{AudioParams, SharedAudioParams};
 use axum::serve;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{RwLock, mpsc, watch};
 use tokio::time::interval;
 use tracing::info;
 
@@ -70,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         initial_snapshot.tension() as f32,
         initial_snapshot.energy() as f32,
         initial_snapshot.warmth() as f32,
+        initial_snapshot.sparkle_impulse() as f32,
     );
     let shared_audio_params = Arc::new(SharedAudioParams::new(initial_audio_params));
 
@@ -113,7 +114,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     // Start API server
-    let app = api::create_router(event_tx, Arc::new(Mutex::new(state_rx)));
+    // Create shared snapshot for API handlers
+    let initial_snapshot = state_rx.borrow().clone();
+    let current_snapshot = Arc::new(RwLock::new(initial_snapshot));
+
+    // Start snapshot task to keep API snapshot updated
+    let state_rx_for_api = state_rx.clone();
+    let current_snapshot_for_task = Arc::clone(&current_snapshot);
+    tokio::spawn(api::start_snapshot_task(
+        state_rx_for_api,
+        current_snapshot_for_task,
+    ));
+
+    let app = api::create_router(event_tx, current_snapshot);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
     info!("API server listening on http://localhost:{}", config.port);
     tokio::spawn(async move {

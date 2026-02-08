@@ -10,6 +10,7 @@ pub struct AudioParams {
     pub brightness: f32,
     pub motion: f32,
     pub texture: f32,
+    pub sparkle_impulse: f32,
 }
 
 impl Default for AudioParams {
@@ -21,6 +22,7 @@ impl Default for AudioParams {
             brightness: 0.5,
             motion: 0.0,
             texture: 0.0,
+            sparkle_impulse: 0.0,
         }
     }
 }
@@ -33,6 +35,7 @@ impl AudioParams {
         tension: f32,
         energy: f32,
         warmth: f32,
+        sparkle_impulse: f32,
     ) -> Self {
         Self {
             master_gain: (energy * 0.2).clamp(0.0, 1.0), // energy -> gain, clamped
@@ -41,6 +44,7 @@ impl AudioParams {
             brightness: (1.0 - warmth * 0.5).clamp(0.0, 1.0), // warmth inverse -> brightness, clamped
             motion: (rhythm * 0.5).clamp(0.0, 1.0),           // rhythm -> motion, clamped
             texture: (density * 0.3).clamp(0.0, 1.0),         // density -> texture, clamped
+            sparkle_impulse,
         }
     }
 }
@@ -54,6 +58,7 @@ pub struct SharedAudioParams {
     brightness: AtomicU32,
     motion: AtomicU32,
     texture: AtomicU32,
+    sparkle_impulse: AtomicU32,
 }
 
 impl SharedAudioParams {
@@ -65,6 +70,7 @@ impl SharedAudioParams {
             brightness: AtomicU32::new(initial.brightness.to_bits()),
             motion: AtomicU32::new(initial.motion.to_bits()),
             texture: AtomicU32::new(initial.texture.to_bits()),
+            sparkle_impulse: AtomicU32::new(initial.sparkle_impulse.to_bits()),
         }
     }
 
@@ -81,6 +87,8 @@ impl SharedAudioParams {
             .store(params.motion.to_bits(), Ordering::Relaxed);
         self.texture
             .store(params.texture.to_bits(), Ordering::Relaxed);
+        self.sparkle_impulse
+            .store(params.sparkle_impulse.to_bits(), Ordering::Relaxed);
     }
 
     pub fn get(&self) -> AudioParams {
@@ -91,6 +99,7 @@ impl SharedAudioParams {
             brightness: f32::from_bits(self.brightness.load(Ordering::Relaxed)),
             motion: f32::from_bits(self.motion.load(Ordering::Relaxed)),
             texture: f32::from_bits(self.texture.load(Ordering::Relaxed)),
+            sparkle_impulse: f32::from_bits(self.sparkle_impulse.load(Ordering::Relaxed)),
         }
     }
 }

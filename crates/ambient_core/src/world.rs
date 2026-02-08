@@ -14,6 +14,7 @@ pub struct WorldState {
     tension: f64,
     energy: f64,
     warmth: f64,
+    sparkle_impulse: f64,
 }
 
 /// World state to share outwardly at a point in time.
@@ -24,6 +25,7 @@ pub struct WorldSnapshot {
     tension: f64,
     energy: f64,
     warmth: f64,
+    sparkle_impulse: f64,
 }
 
 impl Default for WorldState {
@@ -34,6 +36,7 @@ impl Default for WorldState {
             tension: 0.5,
             energy: 0.5,
             warmth: 0.5,
+            sparkle_impulse: 0.0,
         }
     }
 }
@@ -45,6 +48,8 @@ impl WorldState {
     }
 
     /// Introduces a random drift to the world state parameters.
+    /// TODO: This already takes RNG as parameter - good for deterministic mode.
+    /// TODO: Future: Add WorldState::new_deterministic(seed) for testing.
     pub fn drift(&mut self, df: f64, rng: &mut impl Rng) {
         let drift_dir = [-1., 1.];
         let mut compute_drift = |current: f64| {
@@ -62,6 +67,10 @@ impl WorldState {
         self.set_tension(apply_transform(self.tension()));
         self.set_energy(apply_transform(self.energy()));
         self.set_warmth(apply_transform(self.warmth()));
+
+        // Decay sparkle impulse over time
+        let current_impulse = self.sparkle_impulse();
+        self.set_sparkle_impulse((current_impulse - df * 2.0).max(0.0));
     }
 
     // Getters
@@ -83,6 +92,10 @@ impl WorldState {
 
     pub fn warmth(&self) -> f64 {
         self.warmth
+    }
+
+    pub fn sparkle_impulse(&self) -> f64 {
+        self.sparkle_impulse
     }
 
     // Setters
@@ -105,6 +118,10 @@ impl WorldState {
     pub fn set_warmth(&mut self, value: f64) {
         self.warmth = value.clamp(0., 1.);
     }
+
+    pub fn set_sparkle_impulse(&mut self, value: f64) {
+        self.sparkle_impulse = value.max(0.); // Allow values > 1.0 for impulses
+    }
 }
 
 impl WorldSnapshot {
@@ -116,6 +133,7 @@ impl WorldSnapshot {
             tension: world_state.tension(),
             energy: world_state.energy(),
             warmth: world_state.warmth(),
+            sparkle_impulse: world_state.sparkle_impulse(),
         }
     }
 
@@ -139,6 +157,10 @@ impl WorldSnapshot {
     pub fn warmth(&self) -> f64 {
         self.warmth
     }
+
+    pub fn sparkle_impulse(&self) -> f64 {
+        self.sparkle_impulse
+    }
 }
 
 #[cfg(test)]
@@ -159,5 +181,6 @@ mod tests {
         assert!((0.0..=1.0).contains(&state.tension()));
         assert!((0.0..=1.0).contains(&state.energy()));
         assert!((0.0..=1.0).contains(&state.warmth()));
+        assert!(state.sparkle_impulse() >= 0.0);
     }
 }

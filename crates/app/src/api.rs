@@ -1,4 +1,4 @@
-use ambient_core::events::{Event, TriggerKind};
+use ambient_core::events::{Event, PerformAction, TriggerKind};
 use ambient_core::world::WorldSnapshot;
 use axum::{
     Json, Router,
@@ -8,26 +8,59 @@ use axum::{
     routing::{get, post},
 };
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, watch};
+use std::sync::Arc;
+use tokio::sync::{RwLock, mpsc, watch};
+
+/// Task that keeps the current snapshot updated from the watch channel.
+/// This allows async handlers to read the latest snapshot without blocking.
+pub async fn start_snapshot_task(
+    mut state_rx: watch::Receiver<WorldSnapshot>,
+    current_snapshot: Arc<RwLock<WorldSnapshot>>,
+) {
+    loop {
+        // Wait for a new snapshot from the world
+        if state_rx.changed().await.is_err() {
+            // Channel closed, exit
+            break;
+        }
+
+        // Update our shared snapshot
+        let snapshot = state_rx.borrow().clone();
+        *current_snapshot.write().await = snapshot;
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub event_tx: mpsc::Sender<Event>,
-    pub state_rx: Arc<Mutex<watch::Receiver<WorldSnapshot>>>,
+    pub current_snapshot: Arc<RwLock<WorldSnapshot>>,
 }
 
 #[derive(Deserialize)]
-pub struct EventRequest {
-    kind: String,
-    intensity: f64,
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum EventRequest {
+    #[serde(rename = "trigger")]
+    Trigger {
+        kind: TriggerKind,
+        #[serde(default = "default_intensity")]
+        intensity: f64,
+    },
+    #[serde(rename = "perform")]
+    Perform(PerformAction),
+}
+
+fn default_intensity() -> f64 {
+    0.5
 }
 
 pub fn create_router(
     event_tx: mpsc::Sender<Event>,
-    state_rx: Arc<Mutex<watch::Receiver<WorldSnapshot>>>,
+    current_snapshot: Arc<RwLock<WorldSnapshot>>,
 ) -> Router {
-    let state = AppState { event_tx, state_rx };
+    let state = AppState {
+        event_tx,
+        current_snapshot,
+    };
     Router::new()
         .route("/health", get(health))
         .route("/state", get(get_state))
@@ -41,8 +74,7 @@ async fn health() -> impl IntoResponse {
 
 #[axum::debug_handler]
 async fn get_state(State(app_state): State<AppState>) -> impl IntoResponse {
-    let receiver = app_state.state_rx.lock().unwrap();
-    let snapshot = receiver.borrow().clone();
+    let snapshot = app_state.current_snapshot.read().await.clone();
     Json(snapshot)
 }
 
@@ -50,18 +82,9 @@ async fn event(
     State(app_state): State<AppState>,
     Json(req): Json<EventRequest>,
 ) -> impl IntoResponse {
-    let kind = match req.kind.as_str() {
-        "Pulse" => TriggerKind::Pulse,
-        "Stir" => TriggerKind::Stir,
-        "Calm" => TriggerKind::Calm,
-        "Heat" => TriggerKind::Heat,
-        "Tense" => TriggerKind::Tense,
-        _ => return (StatusCode::BAD_REQUEST, "Invalid trigger kind").into_response(),
-    };
-
-    let event = Event::Trigger {
-        kind,
-        intensity: req.intensity,
+    let event = match req {
+        EventRequest::Trigger { kind, intensity } => Event::Trigger { kind, intensity },
+        EventRequest::Perform(action) => Event::Perform(action),
     };
 
     match app_state.event_tx.send(event).await {

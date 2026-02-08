@@ -103,6 +103,7 @@ pub async fn start_audio_control_task(
             snapshot.tension() as f32,
             snapshot.energy() as f32,
             snapshot.warmth() as f32,
+            snapshot.sparkle_impulse() as f32,
         );
 
         // Update shared audio params (atomic, non-blocking)

@@ -79,10 +79,12 @@ pub async fn start_tick_task(
 /// - Subscribes to world state snapshots.
 /// - Computes audio parameters from the latest snapshot.
 /// - Updates the shared audio parameters for real-time control.
+/// - Sends updates to the audio params watch channel for WebSocket clients.
 /// - Runs continuously, updating whenever the world state changes.
 pub async fn start_audio_control_task(
     mut state_rx: watch::Receiver<WorldSnapshot>,
     shared_audio_params: Arc<SharedAudioParams>,
+    audio_params_tx: watch::Sender<AudioParams>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Audio control task started");
 
@@ -108,6 +110,9 @@ pub async fn start_audio_control_task(
 
         // Update shared audio params (atomic, non-blocking)
         shared_audio_params.set(audio_params);
+
+        // Send to watch channel for WebSocket clients
+        let _ = audio_params_tx.send(audio_params);
     }
 
     Ok(())

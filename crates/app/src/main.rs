@@ -73,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         initial_snapshot.sparkle_impulse() as f32,
     );
     let shared_audio_params = Arc::new(SharedAudioParams::new(initial_audio_params));
+    let (audio_params_tx, audio_params_rx) = watch::channel(initial_audio_params);
 
     // Start audio engine early
     let audio_params_clone = Arc::clone(&shared_audio_params);
@@ -90,9 +91,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Start audio control task
     let state_rx_for_audio = state_rx.clone();
     let audio_params_for_control = Arc::clone(&shared_audio_params);
+    let audio_params_tx_for_control = audio_params_tx.clone();
     tokio::spawn(start_audio_control_task(
         state_rx_for_audio,
         audio_params_for_control,
+        audio_params_tx_for_control,
     ));
 
     // State logger task: log snapshot every 1 second
@@ -126,7 +129,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         current_snapshot_for_task,
     ));
 
-    let app = api::create_router(event_tx, current_snapshot);
+    let app = api::create_router(event_tx, current_snapshot, state_rx, audio_params_rx);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
     info!("API server listening on http://localhost:{}", config.port);
     tokio::spawn(async move {

@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio::time::interval;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 struct Config {
@@ -75,10 +75,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let shared_audio_params = Arc::new(SharedAudioParams::new(initial_audio_params));
     let (audio_params_tx, audio_params_rx) = watch::channel(initial_audio_params);
 
-    // Start audio engine early
+    // Start audio engine early (with error handling)
     let audio_params_clone = Arc::clone(&shared_audio_params);
-    let _audio_engine = AudioEngine::start(audio_params_clone)?;
-    info!("Audio engine started");
+    let audio_engine_result = AudioEngine::start(audio_params_clone);
+    let _audio_engine = match audio_engine_result {
+        Ok(engine) => {
+            info!("Audio engine started successfully");
+            Some(engine)
+        }
+        Err(e) => {
+            warn!(
+                "Audio engine failed to start ({}), continuing without audio output",
+                e
+            );
+            None
+        }
+    };
 
     // Default tick rate
     let tick_hz = config.tick_hz;

@@ -9,12 +9,12 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{Any, CorsLayer};
 
 /// Task that keeps the current snapshot updated from the watch channel.
 /// This allows async handlers to read the latest snapshot without blocking.
@@ -62,27 +62,68 @@ pub enum EventRequest {
 pub enum ServerMessage {
     #[serde(rename = "hello")]
     Hello {
-        session_id: String,
-        schema_version: String,
-        tick_rate_hz: f64,
+        version: String,
+        payload: HelloPayload,
     },
     #[serde(rename = "snapshot")]
     Snapshot {
-        world: WorldSnapshot,
-        audio: AudioParamsSnapshot,
+        version: String,
+        payload: SnapshotPayload,
     },
     #[serde(rename = "event_ack")]
     EventAck {
-        request_id: Option<String>,
-        action: String,
-        intensity: Option<f64>,
+        version: String,
+        payload: EventAckPayload,
     },
     #[serde(rename = "error")]
     Error {
-        code: String,
-        message: String,
-        request_id: Option<String>,
+        version: String,
+        payload: ErrorPayload,
     },
+}
+
+#[derive(Serialize)]
+pub struct HelloPayload {
+    pub session_id: String,
+    pub schema_version: String,
+    pub tick_rate_hz: f64,
+}
+
+#[derive(Serialize)]
+pub struct SnapshotPayload {
+    pub world: WorldSnapshot,
+    pub audio: AudioParamsSnapshot,
+}
+
+#[derive(Serialize)]
+pub struct EventAckPayload {
+    pub request_id: Option<String>,
+    pub action: String,
+    pub intensity: Option<f64>,
+}
+
+#[derive(Serialize)]
+pub struct ErrorPayload {
+    pub code: String,
+    pub message: String,
+    pub request_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PerformPayload {
+    pub request_id: Option<String>,
+    pub action: PerformAction,
+}
+
+#[derive(Deserialize)]
+pub struct SetScenePayload {
+    pub request_id: Option<String>,
+    pub scene_name: String,
+}
+
+#[derive(Deserialize)]
+pub struct PingPayload {
+    pub timestamp: f64,
 }
 
 #[derive(Serialize)]
@@ -102,15 +143,18 @@ pub struct AudioParamsSnapshot {
 pub enum ClientMessage {
     #[serde(rename = "perform")]
     Perform {
-        request_id: Option<String>,
-        action: PerformAction,
+        version: String,
+        payload: PerformPayload,
     },
     #[serde(rename = "ping")]
-    Ping { timestamp: Option<f64> },
+    Ping {
+        version: String,
+        payload: PingPayload,
+    },
     #[serde(rename = "set_scene")]
     SetScene {
-        request_id: Option<String>,
-        scene_name: String,
+        version: String,
+        payload: SetScenePayload,
     },
 }
 
@@ -138,8 +182,11 @@ fn validate_perform_action(action: &PerformAction) -> Result<(), String> {
             }
         }
         PerformAction::Freeze { seconds } => {
-            if *seconds <= 0.0 {
-                return Err(format!("Freeze seconds must be positive, got {}", seconds));
+            if *seconds < 0.0 {
+                return Err(format!(
+                    "Freeze seconds must be non-negative, got {}",
+                    seconds
+                ));
             }
             if *seconds > 300.0 {
                 return Err(format!(
@@ -154,6 +201,19 @@ fn validate_perform_action(action: &PerformAction) -> Result<(), String> {
 
 fn default_intensity() -> f64 {
     0.5
+}
+
+/// Helper function to extract action name and intensity from PerformAction
+fn get_action_info(action: &PerformAction) -> (&str, Option<f64>) {
+    match action {
+        PerformAction::Pulse { intensity } => ("Pulse", Some(*intensity)),
+        PerformAction::Stir { intensity } => ("Stir", Some(*intensity)),
+        PerformAction::Calm { intensity } => ("Calm", Some(*intensity)),
+        PerformAction::Heat { intensity } => ("Heat", Some(*intensity)),
+        PerformAction::Tense { intensity } => ("Tense", Some(*intensity)),
+        PerformAction::Scene { .. } => ("Scene", None),
+        PerformAction::Freeze { .. } => ("Freeze", None),
+    }
 }
 
 pub fn create_router(
@@ -171,7 +231,7 @@ pub fn create_router(
 
     // Configure CORS for development (allows UI on localhost:5173)
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::exact("http://localhost:5173".parse().unwrap()))
+        .allow_origin(Any) // Allow any origin for development
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
@@ -221,7 +281,7 @@ async fn websocket_handler(
 }
 
 async fn handle_websocket(socket: WebSocket, state: AppState) {
-    let (_sender, receiver) = socket.split();
+    let (mut sender, receiver) = socket.split();
     let (tx, rx) = mpsc::unbounded_channel();
 
     // Generate session ID
@@ -235,9 +295,12 @@ async fn handle_websocket(socket: WebSocket, state: AppState) {
 
     // Send hello message immediately
     let hello = ServerMessage::Hello {
-        session_id: session_id.clone(),
-        schema_version: "1.0".to_string(),
-        tick_rate_hz: 20.0, // From main.rs default
+        version: "1.0".to_string(),
+        payload: HelloPayload {
+            session_id: session_id.clone(),
+            schema_version: "1.0".to_string(),
+            tick_rate_hz: 20.0, // From main.rs default
+        },
     };
 
     if let Ok(json) = serde_json::to_string(&hello) {
@@ -248,6 +311,16 @@ async fn handle_websocket(socket: WebSocket, state: AppState) {
     let world_rx = state.world_state_rx;
     let audio_rx = state.audio_params_rx;
     let event_tx = state.event_tx;
+
+    // Spawn task to send messages from mpsc to WebSocket
+    let send_task = tokio::spawn(async move {
+        let mut rx_stream = UnboundedReceiverStream::new(rx);
+        while let Some(message) = rx_stream.next().await {
+            if sender.send(message).await.is_err() {
+                break; // Connection closed
+            }
+        }
+    });
 
     // Spawn outgoing task (snapshots)
     let outgoing_tx = tx.clone();
@@ -261,19 +334,16 @@ async fn handle_websocket(socket: WebSocket, state: AppState) {
         handle_incoming_messages(receiver, event_tx, incoming_tx, session_id).await;
     });
 
-    // Keep the connection alive by holding the channel
-    let mut rx_stream = UnboundedReceiverStream::new(rx);
-    while rx_stream.next().await.is_some() {
-        // Messages are handled by the tasks above
-    }
+    // Wait for the send task to finish (connection closed)
+    let _ = send_task.await;
 }
 
 async fn handle_outgoing_snapshots(
-    mut world_rx: watch::Receiver<WorldSnapshot>,
-    mut audio_rx: watch::Receiver<AudioParams>,
+    world_rx: watch::Receiver<WorldSnapshot>,
+    audio_rx: watch::Receiver<AudioParams>,
     tx: mpsc::UnboundedSender<Message>,
 ) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50)); // ~20 Hz
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100)); // 10 Hz - sane update rate
 
     loop {
         tokio::select! {
@@ -293,20 +363,14 @@ async fn handle_outgoing_snapshots(
                     sparkle_impulse: audio_params.sparkle_impulse,
                 };
 
-                let snapshot = ServerMessage::Snapshot { world, audio };
-                let json = serde_json::to_string(&snapshot);
-                if json.is_ok() && tx.send(Message::Text(json.unwrap().into())).is_err() {
+                let snapshot = ServerMessage::Snapshot {
+                    version: "1.0".to_string(),
+                    payload: SnapshotPayload { world, audio },
+                };
+                if let Ok(json) = serde_json::to_string(&snapshot)
+                    && tx.send(Message::Text(json.into())).is_err()
+                {
                     break; // Connection closed
-                }
-            }
-            changed = world_rx.changed() => {
-                if changed.is_err() {
-                    break; // Channel closed
-                }
-            }
-            changed = audio_rx.changed() => {
-                if changed.is_err() {
-                    break; // Channel closed
                 }
             }
         }
@@ -325,47 +389,23 @@ async fn handle_incoming_messages(
                 match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(client_msg) => {
                         match client_msg {
-                            ClientMessage::Perform { request_id, action } => {
+                            ClientMessage::Perform { version, payload } => {
+                                let PerformPayload { request_id, action } = payload;
                                 // Validate the action before processing
                                 match validate_perform_action(&action) {
                                     Ok(_) => {
                                         let event = Event::Perform(action.clone());
                                         if event_tx.send(event).await.is_ok() {
                                             // Send acknowledgment
-                                            let action_name = match action {
-                                                PerformAction::Pulse { .. } => "Pulse",
-                                                PerformAction::Stir { .. } => "Stir",
-                                                PerformAction::Calm { .. } => "Calm",
-                                                PerformAction::Heat { .. } => "Heat",
-                                                PerformAction::Tense { .. } => "Tense",
-                                                PerformAction::Scene { .. } => "Scene",
-                                                PerformAction::Freeze { .. } => "Freeze",
-                                            }
-                                            .to_string();
-
-                                            let intensity = match action {
-                                                PerformAction::Pulse { intensity } => {
-                                                    Some(intensity)
-                                                }
-                                                PerformAction::Stir { intensity } => {
-                                                    Some(intensity)
-                                                }
-                                                PerformAction::Calm { intensity } => {
-                                                    Some(intensity)
-                                                }
-                                                PerformAction::Heat { intensity } => {
-                                                    Some(intensity)
-                                                }
-                                                PerformAction::Tense { intensity } => {
-                                                    Some(intensity)
-                                                }
-                                                _ => None,
-                                            };
+                                            let (action_name, intensity) = get_action_info(&action);
 
                                             let ack = ServerMessage::EventAck {
-                                                request_id,
-                                                action: action_name,
-                                                intensity,
+                                                version: "1.0".to_string(),
+                                                payload: EventAckPayload {
+                                                    request_id,
+                                                    action: action_name.to_string(),
+                                                    intensity,
+                                                },
                                             };
 
                                             if let Ok(json) = serde_json::to_string(&ack) {
@@ -373,9 +413,12 @@ async fn handle_incoming_messages(
                                             }
                                         } else {
                                             let error = ServerMessage::Error {
-                                                code: "SEND_FAILED".to_string(),
-                                                message: "Failed to send event".to_string(),
-                                                request_id,
+                                                version: "1.0".to_string(),
+                                                payload: ErrorPayload {
+                                                    code: "SEND_FAILED".to_string(),
+                                                    message: "Failed to send event".to_string(),
+                                                    request_id,
+                                                },
                                             };
                                             if let Ok(json) = serde_json::to_string(&error) {
                                                 let _ = tx.send(Message::Text(json.into()));
@@ -384,9 +427,12 @@ async fn handle_incoming_messages(
                                     }
                                     Err(validation_error) => {
                                         let error = ServerMessage::Error {
-                                            code: "VALIDATION_ERROR".to_string(),
-                                            message: validation_error,
-                                            request_id,
+                                            version: "1.0".to_string(),
+                                            payload: ErrorPayload {
+                                                code: "VALIDATION_ERROR".to_string(),
+                                                message: validation_error,
+                                                request_id,
+                                            },
                                         };
                                         if let Ok(json) = serde_json::to_string(&error) {
                                             let _ = tx.send(Message::Text(json.into()));
@@ -394,19 +440,26 @@ async fn handle_incoming_messages(
                                     }
                                 }
                             }
-                            ClientMessage::Ping { timestamp: _ } => {
+                            ClientMessage::Ping {
+                                version: _,
+                                payload: _,
+                            } => {
                                 // Echo back ping (could add pong message type later)
                                 tracing::debug!("Received ping from session {}", session_id);
                             }
-                            ClientMessage::SetScene {
-                                request_id,
-                                scene_name,
-                            } => {
+                            ClientMessage::SetScene { version, payload } => {
+                                let SetScenePayload {
+                                    request_id,
+                                    scene_name,
+                                } = payload;
                                 if scene_name.trim().is_empty() {
                                     let error = ServerMessage::Error {
-                                        request_id,
-                                        code: "VALIDATION_ERROR".to_string(),
-                                        message: "Scene name cannot be empty".to_string(),
+                                        version: "1.0".to_string(),
+                                        payload: ErrorPayload {
+                                            request_id,
+                                            code: "VALIDATION_ERROR".to_string(),
+                                            message: "Scene name cannot be empty".to_string(),
+                                        },
                                     };
                                     if let Ok(json) = serde_json::to_string(&error) {
                                         let _ = tx.send(Message::Text(json.into()));
@@ -419,9 +472,12 @@ async fn handle_incoming_messages(
                                 let event = Event::Perform(action);
                                 if event_tx.send(event).await.is_ok() {
                                     let ack = ServerMessage::EventAck {
-                                        request_id,
-                                        action: "Scene".to_string(),
-                                        intensity: None,
+                                        version: "1.0".to_string(),
+                                        payload: EventAckPayload {
+                                            request_id,
+                                            action: "Scene".to_string(),
+                                            intensity: None,
+                                        },
                                     };
                                     if let Ok(json) = serde_json::to_string(&ack) {
                                         let _ = tx.send(Message::Text(json.into()));
@@ -432,9 +488,12 @@ async fn handle_incoming_messages(
                     }
                     Err(e) => {
                         let error = ServerMessage::Error {
-                            code: "INVALID_MESSAGE".to_string(),
-                            message: format!("Failed to parse message: {}", e),
-                            request_id: None,
+                            version: "1.0".to_string(),
+                            payload: ErrorPayload {
+                                code: "INVALID_MESSAGE".to_string(),
+                                message: format!("Failed to parse message: {}", e),
+                                request_id: None,
+                            },
                         };
                         if let Ok(json) = serde_json::to_string(&error) {
                             let _ = tx.send(Message::Text(json.into()));

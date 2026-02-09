@@ -85,11 +85,39 @@ impl WorldEngine {
         self.state.set_tension(self.state.tension() + intensity);
     }
 
-    /// Apply scene change (placeholder for future implementation)
+    /// Apply scene change
     fn apply_scene(&mut self, name: String) {
-        // For now, just log the scene change
-        // TODO: Implement scene transitions
-        tracing::info!("Scene change requested: {}", name);
+        match name.as_str() {
+            "peaceful" => {
+                self.state.set_target_density(0.3);
+                self.state.set_target_rhythm(0.4);
+                self.state.set_target_tension(0.2);
+                self.state.set_target_energy(0.3);
+                self.state.set_target_warmth(0.8);
+            }
+            "energetic" => {
+                self.state.set_target_density(0.7);
+                self.state.set_target_rhythm(0.9);
+                self.state.set_target_tension(0.6);
+                self.state.set_target_energy(0.9);
+                self.state.set_target_warmth(0.6);
+            }
+            "mysterious" => {
+                self.state.set_target_density(0.2);
+                self.state.set_target_rhythm(0.3);
+                self.state.set_target_tension(0.8);
+                self.state.set_target_energy(0.4);
+                self.state.set_target_warmth(0.2);
+            }
+            _ => {
+                self.state.set_target_density(0.5);
+                self.state.set_target_rhythm(0.5);
+                self.state.set_target_tension(0.5);
+                self.state.set_target_energy(0.5);
+                self.state.set_target_warmth(0.5);
+            }
+        }
+        tracing::info!("Scene changed to: {}", name);
     }
 
     /// Apply freeze action (placeholder for future implementation)

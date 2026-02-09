@@ -15,6 +15,12 @@ pub struct WorldState {
     energy: f64,
     warmth: f64,
     sparkle_impulse: f64,
+    // Target values that parameters decay toward
+    target_density: f64,
+    target_rhythm: f64,
+    target_tension: f64,
+    target_energy: f64,
+    target_warmth: f64,
 }
 
 /// World state to share outwardly at a point in time.
@@ -37,6 +43,11 @@ impl Default for WorldState {
             energy: 0.5,
             warmth: 0.5,
             sparkle_impulse: 0.0,
+            target_density: 0.5,
+            target_rhythm: 0.5,
+            target_tension: 0.5,
+            target_energy: 0.5,
+            target_warmth: 0.5,
         }
     }
 }
@@ -56,17 +67,18 @@ impl WorldState {
             let dir = drift_dir.choose(rng).copied().unwrap_or(0.);
             (current + DRIFT_FACTOR * df * dir).clamp(0., 1.)
         };
-        let compute_decay = |current: f64| {
-            let decay: f64 = DECAY_FACTOR * df * (current - 0.5) / 0.5;
+        let compute_decay = |current: f64, target: f64| {
+            let decay: f64 = DECAY_FACTOR * df * (current - target) / 0.5;
             (current - decay).clamp(0., 1.)
         };
-        let mut apply_transform = |value: f64| compute_decay(compute_drift(value));
+        let mut apply_transform =
+            |value: f64, target: f64| compute_decay(compute_drift(value), target);
 
-        self.set_density(apply_transform(self.density()));
-        self.set_rhythm(apply_transform(self.rhythm()));
-        self.set_tension(apply_transform(self.tension()));
-        self.set_energy(apply_transform(self.energy()));
-        self.set_warmth(apply_transform(self.warmth()));
+        self.set_density(apply_transform(self.density(), self.target_density));
+        self.set_rhythm(apply_transform(self.rhythm(), self.target_rhythm));
+        self.set_tension(apply_transform(self.tension(), self.target_tension));
+        self.set_energy(apply_transform(self.energy(), self.target_energy));
+        self.set_warmth(apply_transform(self.warmth(), self.target_warmth));
 
         // Decay sparkle impulse over time
         let current_impulse = self.sparkle_impulse();
@@ -121,6 +133,27 @@ impl WorldState {
 
     pub fn set_sparkle_impulse(&mut self, value: f64) {
         self.sparkle_impulse = value.max(0.); // Allow values > 1.0 for impulses
+    }
+
+    // Target value setters
+    pub fn set_target_density(&mut self, value: f64) {
+        self.target_density = value.clamp(0., 1.);
+    }
+
+    pub fn set_target_rhythm(&mut self, value: f64) {
+        self.target_rhythm = value.clamp(0., 1.);
+    }
+
+    pub fn set_target_tension(&mut self, value: f64) {
+        self.target_tension = value.clamp(0., 1.);
+    }
+
+    pub fn set_target_energy(&mut self, value: f64) {
+        self.target_energy = value.clamp(0., 1.);
+    }
+
+    pub fn set_target_warmth(&mut self, value: f64) {
+        self.target_warmth = value.clamp(0., 1.);
     }
 }
 

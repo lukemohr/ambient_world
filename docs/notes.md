@@ -2,9 +2,83 @@
 
 ## Overview
 
-This is a real-time ambient audio synthesis system built in Rust that generates evolving drone sounds based on a simulated world state. The system uses modern async Rust patterns, real-time audio processing, and reactive programming to create an immersive audio experience.
+This is a real-time ambient audio synthesis system built in Rust that generates evolving drone sounds based on a simulated world state. The system uses modern async Rust patterns, real-time audio processing, and reactive programming to create an immersive audio experience with a React frontend providing real-time visualization and interactive controls.
 
-## Recent Improvements
+## Recent Major Improvements
+
+### WebSocket Real-time Communication
+
+**Bidirectional WebSocket Protocol**: Implemented full-duplex communication between Rust backend and React frontend for real-time state synchronization.
+
+**Message Schema**: Type-safe JSON message envelopes with versioning:
+
+- **Client Messages**: `perform`, `ping`, `set_scene` actions
+- **Server Messages**: `snapshot`, `event_ack`, `hello`, `error` responses
+- **10Hz Streaming**: Optimized snapshot rate prevents excessive network traffic
+
+**Connection Management**: Automatic reconnection, session tracking, and graceful error handling.
+
+### Interactive React Frontend
+
+**Real-time Particle Visualization**: Canvas-based particle system with 100 particles responding to world parameters:
+
+- **Dynamic Movement**: Particles react to density, rhythm, tension, energy, and warmth
+- **Color Mapping**: HSL color space from blue (cool) to red (warm) based on warmth parameter
+- **Size Variation**: Particle size scales with energy levels
+- **Optimized Rendering**: 60fps animation loop decoupled from React re-renders using refs
+
+**UI Controls**: Comprehensive control interface with:
+
+- **Intensity Slider**: Global multiplier for all actions (0.0-1.0)
+- **Action Buttons**: Pulse, Calm, Stir, Tense, Heat with hold-to-repeat functionality
+- **Scene Selector**: Four distinct atmospheric presets (Default, Peaceful, Energetic, Mysterious)
+- **Freeze Toggle**: Pause world evolution for 5 minutes
+- **Connection Status**: Real-time WebSocket connection indicator
+
+**Gesture Controls**: Canvas mouse interaction for direct warmth/energy manipulation:
+
+- **X-axis**: Warmth (left=cool, right=warm)
+- **Y-axis**: Energy (top=calm, bottom=energetic)
+- **Real-time Feedback**: Immediate audio response to gestures
+
+### Scene Management with Persistent Atmospheres
+
+**Target-based Parameter Decay**: Scenes set target values that parameters gradually approach:
+
+- **Persistent Atmospheres**: Scene changes create lasting environmental shifts
+- **Smooth Transitions**: Parameters decay toward targets over time
+- **Four Scene Types**:
+  - **Default**: Balanced atmosphere (density: 0.5, rhythm: 0.5, tension: 0.5, energy: 0.5, warmth: 0.5)
+  - **Peaceful**: Calm, warm, relaxed (density: 0.3, rhythm: 0.3, tension: 0.2, energy: 0.4, warmth: 0.7)
+  - **Energetic**: Fast-paced, intense, lively (density: 0.7, rhythm: 0.8, tension: 0.6, energy: 0.8, warmth: 0.6)
+  - **Mysterious**: Dark, tense, sparse (density: 0.2, rhythm: 0.4, tension: 0.8, energy: 0.3, warmth: 0.2)
+
+### Performance Optimizations
+
+**Decoupled Rendering**: Canvas animation loop runs independently of React state updates:
+
+- **60fps Animation**: Smooth particle rendering without React re-render interference
+- **Ref-based State Access**: Direct access to latest world state without triggering re-renders
+- **Memory Efficiency**: Single particle array reused across frames
+
+**Optimized Particle Physics**:
+
+- **Increased Initial Velocity**: 5x more active baseline movement
+- **Reduced Damping**: 98% velocity retention vs 95% for longer motion persistence
+- **Continuous Motion**: Baseline drift prevents complete stagnation
+- **Enhanced Rhythm**: 3x stronger pulsation effects
+
+**WebSocket Efficiency**: 10Hz snapshot streaming balances responsiveness with network conservation.
+
+### Code Quality Improvements
+
+**Eliminated Repetitive Code**: Created helper functions for action name/intensity extraction in API handlers.
+
+**Optimized DOM Queries**: Canvas gesture handling uses event target instead of ref lookups.
+
+**Fixed Logic Errors**: Corrected event feed slicing to actually maintain 10 items as documented.
+
+## Architecture
 
 ### Audio Engine Enhancements
 
@@ -407,11 +481,43 @@ Orchestrates the entire system:
 
 #### HTTP API (`api.rs`)
 
-REST endpoints using Axum framework with type-safe event schema:
+REST endpoints using Axum framework with type-safe event schema, plus WebSocket real-time communication:
+
+**HTTP Endpoints**:
 
 - `GET /health` - System status
 - `GET /state` - Current world snapshot
 - `POST /event` - Trigger world events
+- `GET /ws` - WebSocket upgrade endpoint
+
+**WebSocket Protocol**:
+
+**Connection Establishment**:
+
+```rust
+// Client connects to ws://localhost:3000/ws
+// Server sends hello message with session info
+{
+  "type": "hello",
+  "version": "1.0",
+  "payload": {
+    "session_id": "abc123",
+    "schema_version": "1.0",
+    "tick_rate_hz": 60.0
+  }
+}
+```
+
+**Real-time Streaming**: Server sends snapshots at 10Hz containing world state and audio parameters.
+
+**Client Actions**: Type-safe JSON messages for all interactions:
+
+```json
+{"type": "perform", "version": "1.0", "payload": {"action": {"Pulse": {"intensity": 0.8}}}}
+{"type": "set_scene", "version": "1.0", "payload": {"scene_name": "peaceful"}}
+```
+
+**Server Acknowledgments**: Immediate feedback for all client actions with request tracking.
 
 **Type-Safe Event Schema**:
 Replaced stringly-typed parsing with proper Rust enums and serde derives:
@@ -663,6 +769,17 @@ SharedAudioParams  .get() atomic    Layer.process()
 Real-time values   Non-blocking      Sample generation
     ↓              ↓              ↓
 CPAL Buffer       f32 samples        System audio
+
+Frontend Integration:
+React UI → WebSocket Client → WebSocket Connection → API Handlers
+    ↓              ↓              ↓              ↓
+User Input   Message Serialization  TCP Stream       Event Processing
+    ↓              ↓              ↓              ↓
+Controls     JSON Messages         Bidirectional     World Updates
+    ↓              ↓              ↓              ↓
+Canvas       Real-time Streaming   10Hz Snapshots   State Broadcast
+    ↓              ↓              ↓              ↓
+Visualization  Particle Animation  Parameter Mapping Audio Response
 ```
 
 ## Performance Considerations
@@ -732,12 +849,33 @@ cargo test -p ambient_core    # Test specific crate
 
 ### Running
 
+**Backend Only**:
+
 ```bash
-cargo run -p app              # Start the application
-# API available at http://localhost:3000
+cargo run -p app              # Start the Rust backend on http://localhost:3000
 ```
 
-### API Usage
+**Full Stack**:
+
+```bash
+# Terminal 1: Start the Rust backend
+cargo run -p app
+
+# Terminal 2: Start the React frontend
+cd ui && npm run dev          # Starts on http://localhost:5173
+```
+
+**API Usage**:
+
+**WebSocket Connection**:
+
+```javascript
+const ws = new WebSocket("ws://localhost:3000/ws");
+// Real-time snapshots arrive automatically
+// Send actions: ws.send(JSON.stringify({type: 'perform', version: '1.0', payload: {action: {Pulse: {intensity: 0.8}}}}))
+```
+
+**HTTP Endpoints**:
 
 ```bash
 # Check health
@@ -760,29 +898,56 @@ curl -X POST http://localhost:3000/event \
   -d '{"type": "perform", "Freeze": {"seconds": 5.0}}'
 ```
 
-**JSON Schema Examples**:
+**WebSocket Message Examples**:
 
-**Trigger Events**:
-
-```json
-{"type": "trigger", "kind": "Pulse", "intensity": 0.8}
-{"type": "trigger", "kind": "Calm", "intensity": 0.3}
-{"type": "trigger", "kind": "Heat"}
-```
-
-**Perform Actions**:
+**Client Messages**:
 
 ```json
-{"type": "perform", "Pulse": {"intensity": 0.9}}
-{"type": "perform", "Scene": {"name": "sunrise"}}
-{"type": "perform", "Freeze": {"seconds": 5.0}}
+{"type": "perform", "version": "1.0", "payload": {"action": {"Pulse": {"intensity": 0.8}}}}
+{"type": "set_scene", "version": "1.0", "payload": {"scene_name": "peaceful"}}
+{"type": "ping", "version": "1.0", "payload": {"timestamp": 1234567890}}
 ```
+
+**Server Messages**:
+
+```json
+{"type": "hello", "version": "1.0", "payload": {"session_id": "abc123", "schema_version": "1.0", "tick_rate_hz": 60}}
+{"type": "snapshot", "version": "1.0", "payload": {"world": {...}, "audio": {...}}}
+{"type": "event_ack", "version": "1.0", "payload": {"action": "Pulse", "intensity": 0.8}}
+{"type": "error", "version": "1.0", "payload": {"code": "VALIDATION_ERROR", "message": "Invalid action"}}
+```
+
+## Frontend Architecture
+
+### React Application Structure
+
+**Main Components** (`ui/src/App.tsx`):
+
+- **State Management**: React hooks for connection, world state, UI controls
+- **WebSocket Integration**: Real-time bidirectional communication
+- **Canvas Rendering**: 60fps particle visualization with optimized animation loop
+- **Gesture Handling**: Mouse interaction for direct parameter manipulation
+- **UI Controls**: Intensity slider, action buttons, scene selector, freeze toggle
+
+**WebSocket Client** (`ui/src/ws/connection.ts`):
+
+- **Connection Management**: Auto-reconnection and state tracking
+- **Message Handling**: Type-safe message parsing and event emission
+- **Action API**: Convenience methods for all perform actions
+- **Error Handling**: Graceful degradation and user feedback
+
+**Performance Optimizations**:
+
+- **Decoupled Rendering**: Canvas animation independent of React updates
+- **Ref-based State Access**: Direct world state access without re-renders
+- **Efficient Gesture Handling**: Event-based DOM queries instead of ref lookups
+- **Optimized Particle Physics**: Enhanced baseline activity and motion persistence
 
 ## Future Extensions
 
 ### Audio Enhancements
 
-- **Multiple layers**: Texture, motion, and additional drones
+- **Multiple layers**: Texture, motion, and additional drones ✅ (partially implemented)
 - **Effects processing**: Reverb, filtering, modulation
 - **Spatial audio**: 3D positioning
 - **Dynamic reconfiguration**: Runtime sample rate changes
@@ -795,12 +960,20 @@ curl -X POST http://localhost:3000/event \
 - **Persistence**: Save/load world states
 - **Deterministic mode**: Seeded RNG for demos/replay (planned)
 
-### API Features
+### Frontend Features ✅ (Implemented)
 
-- **WebSocket streaming**: Real-time state updates
+- **Real-time Visualization**: Particle system with parameter mapping ✅
+- **Interactive Controls**: UI buttons, sliders, and gesture input ✅
+- **Scene Management**: Atmospheric presets with smooth transitions ✅
+- **WebSocket Streaming**: Real-time state synchronization ✅
+- **Performance Optimization**: 60fps rendering with decoupled animation ✅
+
+### API Features ✅ (Implemented)
+
+- **WebSocket streaming**: Real-time state updates ✅
 - **Batch operations**: Multiple events
 - **Configuration**: Runtime parameter adjustment
 - **Metrics**: Performance monitoring
-- **Type safety**: Enum-based schema prevents UI bugs
+- **Type safety**: Enum-based schema prevents UI bugs ✅
 
 This architecture provides a solid foundation for real-time, reactive audio applications with clean separation of concerns and modern Rust patterns.

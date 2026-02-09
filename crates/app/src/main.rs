@@ -11,7 +11,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{RwLock, mpsc, watch};
 use tokio::time::interval;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 struct Config {
@@ -73,11 +73,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         initial_snapshot.sparkle_impulse() as f32,
     );
     let shared_audio_params = Arc::new(SharedAudioParams::new(initial_audio_params));
+    let (audio_params_tx, audio_params_rx) = watch::channel(initial_audio_params);
 
-    // Start audio engine early
+    // Start audio engine early (with error handling)
     let audio_params_clone = Arc::clone(&shared_audio_params);
-    let _audio_engine = AudioEngine::start(audio_params_clone)?;
-    info!("Audio engine started");
+    let audio_engine_result = AudioEngine::start(audio_params_clone);
+    let _audio_engine = match audio_engine_result {
+        Ok(engine) => {
+            info!("Audio engine started successfully");
+            Some(engine)
+        }
+        Err(e) => {
+            warn!(
+                "Audio engine failed to start ({}), continuing without audio output",
+                e
+            );
+            None
+        }
+    };
 
     // Default tick rate
     let tick_hz = config.tick_hz;
@@ -90,9 +103,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Start audio control task
     let state_rx_for_audio = state_rx.clone();
     let audio_params_for_control = Arc::clone(&shared_audio_params);
+    let audio_params_tx_for_control = audio_params_tx.clone();
     tokio::spawn(start_audio_control_task(
         state_rx_for_audio,
         audio_params_for_control,
+        audio_params_tx_for_control,
     ));
 
     // State logger task: log snapshot every 1 second
@@ -126,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         current_snapshot_for_task,
     ));
 
-    let app = api::create_router(event_tx, current_snapshot);
+    let app = api::create_router(event_tx, current_snapshot, state_rx, audio_params_rx);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
     info!("API server listening on http://localhost:{}", config.port);
     tokio::spawn(async move {
